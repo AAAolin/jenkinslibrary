@@ -1,0 +1,72 @@
+pipeline {
+    agent any
+
+    environment{
+        sqlPath = '/sjyh/zdh/dble'
+    }
+
+    options{
+ 		timestamps ()
+    	timeout(10)
+    }
+
+    stages{
+        stage("getSQL"){
+            steps{
+                script {
+                    try{
+                    sh """ssh -t -t mob@103.160.86.201 << eeooff
+							ls -l
+                            ftp -v -n ${ftpServer}
+                                user ${ftpUser} ${ftpPass}
+                                bin
+                                prompt off
+                                cd ${sqlPath}
+                                mget ${sqlName}
+                                close
+                                bye
+							ls -l
+                        exit
+eeooff
+                    scp mob@103.160.86.201:/home/mob/${sqlName} ./
+                    """
+                    } catch (e) {
+                        currentBuild.description="${sqlName}" + "下载失败"
+                        error "下载失败"
+                    }
+                }
+            }
+        }
+        stage("executeSQL"){
+            steps{
+                script{
+                    try {
+                    sh """
+                    scp ./${sqlName} mob@103.160.122.178:/home/mob
+                    ssh -t -t mob@103.160.122.178<< eeooff
+                          mysql -u${dbleUser} -p${dblePassword} -h${dbleServer} -P${dblePort} mobile --default-character-set=utf8 < "/home/mob/run.sql"
+                          exit
+eeooff
+                    """
+                    } catch(e) {
+                        currentBuild.description="${sqlName}" + "执行失败"
+                        error "执行失败"
+                    }
+                }
+            }
+        }
+    }
+    post{
+    	success{
+    		script{
+    			currentBuild.description =  "成功\n" + "sql文件：${sqlName}\n" + "用时：" + currentBuild.duration/1000 + "s"
+    		}
+    	}
+
+    	aborted{
+    		script{
+    			currentBuild.description = "操作取消"
+    		}
+    	}
+    }
+}

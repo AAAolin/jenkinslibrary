@@ -1,0 +1,135 @@
+def projectList = project.split(" ")
+def server
+
+pipeline{
+
+    agent any
+
+    environment{
+        mvnPath = '/var/jenkins_home/apache-maven-3.5.0/bin'
+    }
+
+	options{
+		timestamps ()
+		timeout(10)
+	}
+
+    stages{
+
+        stage("getCode"){
+            steps{
+                checkout([$class: 'GitSCM', branches: [[name: '${branch}']], doGenerateSubmoduleConfigurations: false, extensions: [],
+                submoduleCfg: [], userRemoteConfigs: [[credentialsId: '1f95386a-da3a-472f-a1a0-e2c4ad946cfc', url: 'http://scm.hxmis.com/osc__00004/ares_service.git']]])
+            }
+        }
+        stage("mvnCode"){
+            steps{
+                script{
+					println(projectList.toString())
+                    try{
+						sh """cd ${WORKSPACE}/ares-web-debug
+                        ${mvnPath}/mvn clean install
+                        cd ${WORKSPACE}/Hxares-dubbo-parent
+                        ${mvnPath}/mvn clean install"""
+
+						for (i=0;i<projectList.size();i++){
+							sh """
+                            cd ${WORKSPACE}/gateway-parent/${projectList[i]}
+                            ${mvnPath}/mvn clean package -P uat -D maven.test.skip=true
+							"""
+						}
+
+                    } catch(e){
+                        currentBuild.description="编译失败" + "${branch}"
+                        error "编译失败"
+                    }
+                }
+            }
+        }
+
+		stage("deploy"){
+			steps{
+				script{
+					try {
+						scpPackage(projectList,"${server}")
+					} catch(e) {
+						error "部署失败"
+					}
+				}
+			}
+		}
+
+    }
+
+	post{
+		success{
+			script{
+				currentBuild.description =  "发布成功\n" + "分支：${branch}\n" + "用时：" + currentBuild.duration/1000 + "s"
+			}
+		}
+
+		aborted{
+			script{
+				currentBuild.description = "操作取消"
+			}
+		}
+	}
+}
+
+//获取微服务ip
+def getServer(projectListValue,server){
+	println(projectListValue)
+	switch (projectListValue) {
+		case "gateway-agent":
+			server = "103.160.155.54"
+			break;
+		case "gateway-inside":
+			server = "103.160.155.27"
+			break;
+		case "gateway-push":
+			server = "103.160.155.57"
+			break;
+	}
+	return server
+}
+
+//scp传包
+def scpPackage(projectList,server){
+	println(projectList.toString())
+	for (i=0;i<projectList.size();i++){
+
+		server = getServer("${projectList[i]}","${server}")
+		println(server)
+
+		try{
+			sh """scp ${WORKSPACE}/gateway-parent/${projectList[i]}/target/${projectList[i]}.tar.gz mob@${server}:/backapp/package/${projectList[i]}.tar.gz"""
+			println("发送" + projectList[i] + "成功")
+
+		} catch(e) {
+			currentBuild.description="发送失败"
+			echo "发送${projectList[i]}失败"
+			error
+		}
+
+		try{
+			deploy("${server}")
+		} catch(e) {
+			currentBuild.description="部署失败"
+			echo "部署${projectList[i]}失败"
+			error
+		}
+
+	}
+}
+
+//部署
+def deploy(server){
+	sh """ssh -t -t mob@${server} << eeooff
+	cd /backapp/script
+	ls -l | grep update.sh
+	sh update.sh
+	exit
+eeooff
+	"""
+
+}
